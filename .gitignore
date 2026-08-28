@@ -1,0 +1,45 @@
+# 数据、权重与实验产物
+data/
+checkpoints/
+experiments/
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.*
+
+# 模型权重与本地缓存
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+.cache/
+
+# 日志与实验跟踪
+*.log
+wandb/
+runs/
+.ipynb_checkpoints/
+
+# 编译产物
+*.so
+*.pyd
+*.dll
+
+# 本机 IDE 与 Agent 会话文件
+.vscode/
+.zcode/
+
+# OS
+.DS_Store
+Thumbs.db
