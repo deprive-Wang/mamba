@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import atexit
 import argparse
 import math
 import time
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,7 @@ MIN_LR = 3e-5
 WEIGHT_DECAY = 0.1
 BETAS = (0.9, 0.95)
 GRAD_CLIP = 1.0
+DEFAULT_TENSORBOARD_DIR = Path("/root/tf-logs")
 
 
 def configure_optimizer(
@@ -159,10 +162,34 @@ def format_metrics_row(
     )
 
 
+def build_tensorboard_run_dir(
+    tensorboard_dir: Path,
+    run_name: str | None,
+) -> Path:
+    """为本次训练创建独立目录，避免不同实验的曲线混在一起。"""
+    name = run_name or f"mamba-{datetime.now():%Y%m%d-%H%M%S}"
+    if not name.strip() or name in {".", ".."} or Path(name).name != name:
+        raise ValueError("--run-name 必须是单个非空目录名，不能包含路径分隔符")
+
+    run_dir = tensorboard_dir.expanduser() / name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="训练纯 PyTorch 教学版 Mamba LM")
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--output-dir", type=Path, default=Path("checkpoints"))
+    parser.add_argument(
+        "--tensorboard-dir",
+        type=Path,
+        default=DEFAULT_TENSORBOARD_DIR,
+        help="TensorBoard 日志根目录，默认 /root/tf-logs",
+    )
+    parser.add_argument(
+        "--run-name",
+        help="TensorBoard 子目录名；默认使用带时间戳的名称",
+    )
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--warmup-steps", type=int, default=10)
@@ -225,6 +252,13 @@ def validate_args(args: argparse.Namespace) -> torch.device:
 def main() -> None:
     args = parse_args()
     device = validate_args(args)
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ImportError as error:
+        raise RuntimeError(
+            "缺少 TensorBoard，请先执行 pip install -r requirements.txt"
+        ) from error
+
     torch.manual_seed(args.seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(args.seed)
@@ -257,6 +291,13 @@ def main() -> None:
         if start_step >= args.max_steps:
             raise ValueError("checkpoint step 已达到或超过 --max-steps")
 
+    tensorboard_run_dir = build_tensorboard_run_dir(
+        args.tensorboard_dir,
+        args.run_name,
+    )
+    writer = SummaryWriter(log_dir=str(tensorboard_run_dir))
+    atexit.register(writer.close)
+
     print(
         format_key_values(
             [
@@ -271,6 +312,7 @@ def main() -> None:
                     "d_state / d_conv / expand",
                     f"{args.d_state} / {args.d_conv} / {args.expand}",
                 ),
+                ("TensorBoard", tensorboard_run_dir.resolve()),
                 ("实现", "纯 PyTorch 逐步扫描；仅用于学习和小实验"),
             ]
         )
@@ -320,6 +362,12 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         completed_step = step + 1
         latest_train_loss = accumulated_loss / args.grad_accum
+        writer.add_scalar("train/loss", latest_train_loss, completed_step)
+        writer.add_scalar(
+            "train/learning_rate",
+            learning_rate,
+            completed_step,
+        )
 
         should_eval = completed_step == 1 or completed_step % args.eval_interval == 0
         if should_eval:
@@ -344,6 +392,31 @@ def main() -> None:
                         completed_step,
                         best_val_loss,
                     )
+            writer.add_scalar(
+                "eval/train_loss",
+                losses["train"],
+                completed_step,
+            )
+            writer.add_scalar(
+                "eval/val_loss",
+                losses["val"],
+                completed_step,
+            )
+            writer.add_scalar(
+                "eval/train_perplexity",
+                math.exp(min(losses["train"], 20)),
+                completed_step,
+            )
+            writer.add_scalar(
+                "eval/val_perplexity",
+                math.exp(min(losses["val"], 20)),
+                completed_step,
+            )
+            writer.add_scalar(
+                "eval/best_val_loss",
+                best_val_loss,
+                completed_step,
+            )
 
         should_log = (
             completed_step == 1
@@ -370,6 +443,17 @@ def main() -> None:
                     peak_memory_mb,
                 )
             )
+            writer.add_scalar(
+                "performance/tokens_per_second",
+                tokens_per_second,
+                completed_step,
+            )
+            writer.add_scalar(
+                "performance/peak_memory_mb",
+                peak_memory_mb,
+                completed_step,
+            )
+            writer.flush()
             interval_tokens = 0
             interval_start = time.perf_counter()
 
@@ -387,6 +471,9 @@ def main() -> None:
                 completed_step,
                 best_val_loss,
             )
+
+    writer.close()
+    atexit.unregister(writer.close)
 
 
 if __name__ == "__main__":

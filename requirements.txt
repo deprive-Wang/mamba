@@ -1,5 +1,5 @@
 numpy
-matplotlib
+tensorboard
 
 # CUDA 版 torch 应由本机或云镜像以兼容版本安装，不在此处覆盖。
 # mamba-ssm、causal-conv1d 等编译型依赖需先核验平台、PyTorch 和 CUDA 组合，

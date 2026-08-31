@@ -16,7 +16,7 @@
 
 ## 当前进度
 
-记录日期：2026-08-28
+记录日期：2026-08-31
 
 - [x] 创建项目目录 `D:\holiday_learning\mamba`
 - [x] 建立项目级 `AGENTS.md`、`.gitignore`、`requirements.txt` 和 `README.md`
@@ -26,11 +26,14 @@
 - [x] 完成可信纯 PyTorch 教学实现的前向 shape 检查
 - [ ] 画出 Transformer block 与 Mamba block 的数据流对照
 - [x] 决定进入复用 TinyStories token 流的极小语言模型实验
+- [x] 接入 TensorBoard 标量日志，默认根目录为 `/root/tf-logs`
 - [ ] 记录实际速度、峰值显存、训练曲线和输出样例
 
 当前已使用 `mamba` 环境（Python 3.11.16、PyTorch 2.5.1+cu121）完成纯
 PyTorch 教学版 Mamba、数据加载、shape/因果检查与两步 CUDA 训练 smoke。
 该 smoke 只验证链路，不构成收敛、生成质量或性能结论；正式小实验尚未运行。
+训练脚本已记录 loss、perplexity、学习率、tokens/sec 和峰值显存到
+TensorBoard；日志根目录可通过 `--tensorboard-dir` 修改。
 
 ## 固定学习顺序
 
@@ -85,7 +88,7 @@ mamba/
   AGENTS.md             项目约定、环境、进度与验收标准
   README.md             对外项目说明和最终实验结论
   .gitignore
-  requirements.txt      仅记录与 CUDA 无关、已确认需要的依赖
+  requirements.txt      numpy 与 tensorboard；不覆盖 CUDA 版 torch
   notes/                论文与结构笔记；开始阅读时再创建
   model.py              最小 Mamba block 或小模型；方案确定后再创建
   shape_check.py        [B,T,D] 前向与关键 shape 检查
