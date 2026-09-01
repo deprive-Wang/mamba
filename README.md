@@ -10,10 +10,13 @@
 | 文件 | 作用 |
 |---|---|
 | `model.py` | Mamba mixer、RMSNorm、残差 block、极小语言模型 |
-| `dataset.py` | uint16 memmap 数据加载、随机 batch、label 右移检查 |
+| `data_splits.py` | 加载物理隔离的 train/validation/test，训练接口不返回 test |
+| `dataset.py` | uint16 memmap 随机 batch、label 右移与三段数据检查 |
 | `shape_check.py` | 输出 `Δ/B/C` 等关键 shape，并检查残差与因果性 |
 | `train.py` | AdamW、warmup/cosine、FP16、梯度累积、评估、checkpoint 与 TensorBoard |
+| `evaluate.py` | 加载 `best.pt`，只在物理 `test.bin` 上报告最终指标 |
 | `reporting.py` | 统一输出 `| 项目 | 值 |` 表格 |
+| `tests/` | 数据隔离和 checkpoint 最终评估的行为测试 |
 
 ## 模型与论文参数
 
@@ -66,24 +69,30 @@ y_t = C_t h_t + D x_t
 
 ## 数据
 
-数据层读取两个连续 uint16 token 文件：
+数据层读取三个连续 uint16 token 文件：
 
 ```text
 data/train.bin
 data/val.bin
+data/test.bin
 ```
 
-当前已用 `D:\holiday_learning\mini_GPT\data` 中的 TinyStories 数据验证：
+`train.bin` 全部用于训练，`val.bin` 用于选择最佳 checkpoint，`test.bin` 只由
+`evaluate.py` 读取。训练进程不会加载 `test.bin`，因此最终测试不参与训练或
+checkpoint 选择。
 
-| split | token 数 | token id 范围 |
+为便于上传，已直接将本地 `data/val.bin` 固定为原始验证流的前 80%，并把后 20%
+写入同目录的 `data/test.bin`。上传 `data/` 内的三个 `.bin` 文件到远程同名目录
+即可。
+
+| split | token 数 | 说明 |
 |---|---:|---:|
-| train | 224,512,862 | 0..50256 |
-| val | 4,765,918 | 0..50256 |
+| train | 224,512,862 | 训练 |
+| validation | 3,812,734 | 选择最佳 checkpoint |
+| test | 953,184 | 最终一次评估 |
 
-Git 不跟踪数据。本次用于手工上传的目录保留 `data/train.bin`、`data/val.bin`
-和已有的 Hugging Face `hf_cache`；训练直接读取两个 `.bin` 文件，`hf_cache`
-用于后续重新处理数据。运行时也可用 `--data-dir` 指向远程主机上的其他数据
-目录；采样得到的 `x/y` 均为 `[B,T]`，并满足
+Git 不跟踪数据。训练运行只需要 `data/train.bin`、`data/val.bin`、`data/test.bin`；
+本地及远程均使用各自的 `data/` 目录。采样得到的 `x/y` 均为 `[B,T]`，并满足
 `y[:, :-1] == x[:, 1:]`。
 
 ## 远程主机运行
@@ -94,20 +103,58 @@ Git 不跟踪数据。本次用于手工上传的目录保留 `data/train.bin`�
 pip install -r requirements.txt
 ```
 
-默认读取项目内 `data/`，checkpoint 写入 `checkpoints/`，TensorBoard 事件写入
-`/root/tf-logs/<run-name>/`：
+AutoDL 当前 shell 若把 `OMP_NUM_THREADS` 设为无效的 `0`，在每个新终端或
+screen 会话中临时覆盖：
 
 ```bash
-python train.py --run-name mamba-baseline
+export OMP_NUM_THREADS=1
 ```
 
-日志根目录和实验名都可以通过命令行修改：
+先运行测试、数据检查和 shape 检查：
+
+```bash
+python -m unittest discover -s tests -v
+python dataset.py --data-dir "$PWD/data"
+python shape_check.py --device cuda
+```
+
+正式 baseline 从头训练 1000 个 optimizer step：
 
 ```bash
 python train.py \
-  --data-dir /path/to/data \
+  --data-dir "$PWD/data" \
+  --output-dir "$PWD/checkpoints" \
   --tensorboard-dir /root/tf-logs \
-  --run-name mamba-baseline
+  --run-name mamba-formal-1000 \
+  --max-steps 1000 \
+  --warmup-steps 100 \
+  --batch-size 4 \
+  --block-size 128 \
+  --grad-accum 1 \
+  --d-model 128 \
+  --n-layers 4 \
+  --d-state 16 \
+  --d-conv 4 \
+  --expand 2 \
+  --eval-interval 100 \
+  --eval-iters 10 \
+  --log-interval 10 \
+  --checkpoint-interval 100 \
+  --device cuda
+```
+
+训练结束后，只对 `best.pt` 做一次最终 test 评估：
+
+```bash
+python evaluate.py \
+  --checkpoint "$PWD/checkpoints/best.pt" \
+  --data-dir "$PWD/data" \
+  --batch-size 4 \
+  --eval-batches 100 \
+  --seed 42 \
+  --tensorboard-dir /root/tf-logs \
+  --run-name mamba-formal-1000 \
+  --device cuda
 ```
 
 若平台没有自动启动 TensorBoard 服务，可在远程主机执行：
@@ -116,17 +163,20 @@ python train.py \
 tensorboard --logdir /root/tf-logs --host 0.0.0.0 --port 6006
 ```
 
-曲线包含训练 loss、学习率、评估集 train/val loss、perplexity、tokens/sec 和
-峰值显存。未传 `--run-name` 时自动使用时间戳子目录，避免不同实验混写。
+训练曲线包含 loss、学习率、train/validation loss、perplexity、tokens/sec 和
+峰值显存。`evaluate.py` 使用与训练相同的 `--tensorboard-dir`、`--run-name` 时，
+会把 test loss、test perplexity、评估吞吐和峰值显存追加到同一 run；未传
+`--run-name` 时会写入 `evaluation-best` 子目录。脚本在本地默认写入项目根目录
+的 `tf-logs/`，远程训练命令通过 `--tensorboard-dir /root/tf-logs` 覆盖该默认值。
 
 ## 快速开始
 
-以下命令在项目根目录、激活 `mamba` 环境后执行。
+以下命令在项目根目录、激活可用的 PyTorch 环境后执行。
 
 检查真实数据：
 
 ```powershell
-python dataset.py --data-dir D:\holiday_learning\mini_GPT\data
+python dataset.py --data-dir data
 ```
 
 检查 block 的关键 shape 和因果性：
@@ -139,25 +189,31 @@ python shape_check.py
 
 ```powershell
 python train.py `
-  --data-dir D:\holiday_learning\mini_GPT\data `
+  --data-dir data `
   --max-steps 2 --warmup-steps 1 `
   --batch-size 2 --block-size 32 `
   --d-model 64 --n-layers 2 `
   --eval-interval 1 --eval-iters 1 --no-save
 ```
 
-再运行默认小实验；checkpoint 写入已忽略的 `checkpoints/`：
+再运行默认 1000-step baseline；checkpoint 写入已忽略的 `checkpoints/`：
 
 ```powershell
-python train.py --data-dir D:\holiday_learning\mini_GPT\data
+python train.py --data-dir data --run-name mamba-formal-1000
 ```
 
 从 latest 恢复时，模型结构参数必须与 checkpoint 一致：
 
 ```powershell
 python train.py `
-  --data-dir D:\holiday_learning\mini_GPT\data `
-  --resume checkpoints\latest.pt --max-steps 200
+  --data-dir data `
+  --resume checkpoints\latest.pt --max-steps 2000
+```
+
+训练完成后的最终测试：
+
+```powershell
+python evaluate.py --checkpoint checkpoints\best.pt --data-dir data
 ```
 
 ## 已验证边界
@@ -172,6 +228,16 @@ python train.py `
 | CUDA shape 与因果检查 | 通过 |
 | 真实 TinyStories 数据读取 | 通过 |
 | CUDA 两步训练 smoke | 通过，loss 有限、显存统计可输出 |
+
+2026-09-01 本次补充：
+
+| 检查 | 结果 |
+|---|---|
+| 物理 train/val/test 数据隔离 | 本地行为测试通过 |
+| 训练接口不读取 test.bin | 本地行为测试通过 |
+| `evaluate.py` CPU 端到端测试 | 本地 `mamba` 环境通过 |
+| CUDA 两步 train→best.pt→test 闭环 | 本地 `mamba` 环境通过；仅为 smoke |
+| `evaluate.py` CUDA 最终评估 | 本地 RTX 3070：test loss 4.3439，PPL 77.01（100 个固定随机 batch） |
 
 两步 smoke 只证明训练链路闭合，不能据此判断收敛、生成质量或 Mamba 相对
 Transformer 的性能。纯 PyTorch 逐步扫描也不能用于论文吞吐量复现。

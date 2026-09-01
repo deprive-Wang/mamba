@@ -14,7 +14,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from dataset import DEFAULT_DATA_DIR, get_batch, load_splits
+from data_splits import load_training_splits
+from dataset import DEFAULT_DATA_DIR, get_batch
 from model import MambaConfig, MambaLanguageModel
 from reporting import format_key_values
 
@@ -23,7 +24,7 @@ MIN_LR = 3e-5
 WEIGHT_DECAY = 0.1
 BETAS = (0.9, 0.95)
 GRAD_CLIP = 1.0
-DEFAULT_TENSORBOARD_DIR = Path("/root/tf-logs")
+DEFAULT_TENSORBOARD_DIR = Path(__file__).resolve().parent / "tf-logs"
 
 
 def configure_optimizer(
@@ -184,22 +185,22 @@ def parse_args() -> argparse.Namespace:
         "--tensorboard-dir",
         type=Path,
         default=DEFAULT_TENSORBOARD_DIR,
-        help="TensorBoard 日志根目录，默认 /root/tf-logs",
+        help="TensorBoard 日志根目录，默认项目根目录下的 tf-logs",
     )
     parser.add_argument(
         "--run-name",
         help="TensorBoard 子目录名；默认使用带时间戳的名称",
     )
     parser.add_argument("--resume", type=Path)
-    parser.add_argument("--max-steps", type=int, default=100)
-    parser.add_argument("--warmup-steps", type=int, default=10)
+    parser.add_argument("--max-steps", type=int, default=1_000)
+    parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument("--grad-accum", type=int, default=1)
-    parser.add_argument("--eval-interval", type=int, default=25)
-    parser.add_argument("--eval-iters", type=int, default=4)
-    parser.add_argument("--log-interval", type=int, default=5)
-    parser.add_argument("--checkpoint-interval", type=int, default=50)
+    parser.add_argument("--eval-interval", type=int, default=100)
+    parser.add_argument("--eval-iters", type=int, default=10)
+    parser.add_argument("--log-interval", type=int, default=10)
+    parser.add_argument("--checkpoint-interval", type=int, default=100)
     parser.add_argument("--vocab-size", type=int, default=50_257)
     parser.add_argument("--d-model", type=int, default=128)
     parser.add_argument("--n-layers", type=int, default=4)
@@ -276,7 +277,7 @@ def main() -> None:
     optimizer = configure_optimizer(model, PEAK_LR, device)
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
-    splits = load_splits(args.data_dir)
+    splits = load_training_splits(args.data_dir)
 
     start_step = 0
     best_val_loss = float("inf")
@@ -305,6 +306,8 @@ def main() -> None:
                 ("PyTorch", torch.__version__),
                 ("参数量", f"{model.num_parameters():,}"),
                 ("数据目录", args.data_dir.expanduser().resolve()),
+                ("validation", "物理 val.bin"),
+                ("test 隔离", "训练进程不读取物理 test.bin"),
                 ("batch / grad_accum", f"{args.batch_size} / {args.grad_accum}"),
                 ("序列长度 T", args.block_size),
                 ("d_model / layers", f"{args.d_model} / {args.n_layers}"),

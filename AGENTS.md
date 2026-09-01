@@ -16,7 +16,7 @@
 
 ## 当前进度
 
-记录日期：2026-08-31
+记录日期：2026-09-01
 
 - [x] 创建项目目录 `D:\holiday_learning\mamba`
 - [x] 建立项目级 `AGENTS.md`、`.gitignore`、`requirements.txt` 和 `README.md`
@@ -27,13 +27,24 @@
 - [ ] 画出 Transformer block 与 Mamba block 的数据流对照
 - [x] 决定进入复用 TinyStories token 流的极小语言模型实验
 - [x] 接入 TensorBoard 标量日志，默认根目录为 `/root/tf-logs`
-- [ ] 记录实际速度、峰值显存、训练曲线和输出样例
+- [x] 将本地 `data/val.bin` 固定划分为 80% validation，并在同目录生成 `test.bin`
+- [x] 添加只读取 `best.pt` 与物理 `test.bin` 的独立 `evaluate.py`
+- [x] 在本地 `mamba` 环境通过 3 项测试及两步 CUDA train→test 闭环
+- [x] 记录实际训练与最终 test 的 loss、perplexity、速度、峰值显存和 TensorBoard 曲线
+- [ ] 生成文本样例
+- [ ] 在远程运行完整测试、1000-step baseline 与最终 test 评估
 
 当前已使用 `mamba` 环境（Python 3.11.16、PyTorch 2.5.1+cu121）完成纯
 PyTorch 教学版 Mamba、数据加载、shape/因果检查与两步 CUDA 训练 smoke。
-该 smoke 只验证链路，不构成收敛、生成质量或性能结论；正式小实验尚未运行。
+该 smoke 只验证链路，不构成收敛、生成质量或性能结论。正式 1000-step 小实验已在
+AutoDL RTX 3090 完成，最佳 `best.pt` 位于 step 900，validation loss 为 4.341955；
+本地 RTX 3070 使用同一 checkpoint 与物理 `test.bin` 完成最终评估，test loss 为
+4.3439、perplexity 为 77.01（100 个固定随机 batch）。
 训练脚本已记录 loss、perplexity、学习率、tokens/sec 和峰值显存到
-TensorBoard；日志根目录可通过 `--tensorboard-dir` 修改。
+TensorBoard；`evaluate.py` 会将最终 test 指标追加到指定 run。日志根目录可通过
+`--tensorboard-dir` 修改。
+训练 checkpoint 不记录或读取 test 数据；最终评估只读取物理 `test.bin`，该文件
+不参与训练和 checkpoint 选择。
 
 ## 固定学习顺序
 
@@ -73,8 +84,9 @@ TensorBoard；日志根目录可通过 `--tensorboard-dir` 修改。
 ## 实验边界
 
 - 第一优先级是结构理解和最小前向，不直接启动长时间训练。
-- 小实验只选一个：复用 Mini-GPT 的极小数据/训练壳并替换 backbone，或选择一个很小的序列分类任务。
-- 未确定任务前，不预设数据集、模型规模、batch size、训练轮数和目标精度。
+- 当前任务固定为复用 Mini-GPT TinyStories token 流的极小语言模型实验。
+- 正式 baseline 为 1000 step、batch size 4、block size 128、`d_model=128`、4 层。
+- 本地与远程 `data/val.bin` 是原验证流前 80%，同目录 `data/test.bin` 是后 20%。
 - Transformer 对照必须使用相同输入长度、数据划分、训练预算和评价指标；无法控制的实现差异要明确写出。
 - 所有准确率、loss、速度、显存和耗时必须来自实际运行；不得填写预期值冒充结果。
 - 数据、权重、缓存、日志和可再生实验产物不提交版本控制。
@@ -93,7 +105,7 @@ mamba/
   model.py              最小 Mamba block 或小模型；方案确定后再创建
   shape_check.py        [B,T,D] 前向与关键 shape 检查
   train.py              只有选择训练实验后才创建
-  evaluate.py           只有任务需要独立评估时才创建
+  evaluate.py           best checkpoint 的独立 test loss/perplexity 评估
   data/                 已忽略；数据与缓存
   checkpoints/          已忽略；模型权重
   experiments/          已忽略；日志、曲线和临时实验产物
@@ -118,4 +130,7 @@ mamba/
 
 ## 下一步
 
-ViT 消融和实验总结完成后，再开始 Mamba 第一天：先读论文摘要、图 1 和 §3，画第一版 Transformer/Mamba 数据流图；随后确认运行平台与环境，不在环境未确定时提前安装编译型依赖。
+上传最新代码及 `data/` 内三个 `.bin` 文件到 AutoDL 后，依次运行测试、
+`dataset.py`、`shape_check.py`、1000-step baseline 和 `evaluate.py`；记录
+TensorBoard 曲线、最佳 validation 指标与最终 test 指标。之后再整理
+Transformer/Mamba 数据流对照和实验结论。
